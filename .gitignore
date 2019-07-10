@@ -1,0 +1,8 @@
+
+__pycache__/*
+.vscode/*
+data/*
+.ipynb_checkpoints/*
+
+OE/sqlite3.*
+*.db
