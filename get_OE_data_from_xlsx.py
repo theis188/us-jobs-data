@@ -1,6 +1,6 @@
 
-from config import XLS_Constants, OE_Constants
-from config import DATA_FOLDER,FULL_FOLDER,NAT_FOLDER,STATE_FOLDER,METRO_FOLDER,DB_PATH
+from config import XLS_Constants, OE_Constants, CONSTANTS
+from config import DATA_FOLDER,FULL_FOLDER,NAT_FOLDER,STATE_FOLDER,METRO_FOLDER,DB_PATH,DATA_CODE_AGG_FUNCS, apply_occ_transformations, sum_groups_df, apply_degrouping_transformations
 import os
 import sqlite3
 import re
@@ -9,9 +9,17 @@ import time
 
 _conn = sqlite3.connect(DB_PATH)
 
-_constants = XLS_Constants()
+_constants = CONSTANTS
 _column_heads = _constants.column_heads
 _data_u_want = _constants.data_u_want
+
+pd.set_option("display.width", 1000)
+
+# df[
+# 	(df["AREA_CODE"] == "N0000000") &
+# 	(df["INDUSTRY_CODE"] == "000000") &
+# 	(df["OCC_CODE"].str.endswith("0"))
+# ][["TOT_EMP", "OCC_CODE", "OCC_TITLE"]].OCC_CODE.value_counts()
 
 def process_all():
 	for foldername in [FULL_FOLDER,NAT_FOLDER,STATE_FOLDER,METRO_FOLDER]:
@@ -21,37 +29,69 @@ def process_all():
 		excel_files = sorted( [f for f in filenames if f.endswith('xlsx')] )
 		for filename in excel_files:
 			year = filename.split('.')[0]
-			if (int(year)<2005) and (foldername ==METRO_FOLDER) :
+			## before 2004, and metro before 2005 should be skipped
+			if (int(year)<2005) and (foldername == METRO_FOLDER) :
 				continue
-			if int(year)<2001:
+			if int(year)<2004:
 				continue
-			print(filename)
 			filepath = os.path.join( subfolder_path, filename )
 			before = time.time()
-			df = open_df_smart(filepath)
-			print('df opened!')
+			# filename = "2019.xlsx"; foldername=FULL_FOLDER; subfolder_path = os.path.join( DATA_FOLDER,foldername ); filepath = os.path.join( subfolder_path, filename ); year = filename.split(".")[0]; data_type_code="01"
+			df_original = open_df_smart(filepath)
 			after = time.time()
-			print( after - before )
-			generate_codes(df,year, foldername)
-			print('codes generated!')
-			insert_data(df, '01', year)
-			print( 'data inserted!' )
+			print(filename)
+			print('df opened!')
+			print("time taken to open", after - before )
+			for data_type_code in ["01"]:
+				# translates column names
+				df = df_original.copy()
+				df = generate_basic_codes(df, year, foldername)
+				print("basic codes generated")
+				df = numerify_data_col(df, data_type_code)
+				print("data col numerified")				
+				df = apply_degrouping_transformations(df, year)
+				print("degrouping transformations applied")
+				df = deduplicate_df(df)
+				print("deduplicate df")
+				df = apply_occ_transformations(df, year)
+				print("transform occ_code dfs")
+				df = generate_series_codes(df, data_type_code)
+				print('codes generated!')
+				df = sum_groups_df(df)
+				print("calculate df groups from constituents")
+				insert_data(df, year, data_type_code)
+				print( 'data inserted!' )
 
-def generate_codes(df,year,foldername):
+
+def numerify_data_col(df, data_type_code):
+	data_head = _column_heads['data_codes'][data_type_code]
+	df[data_head] = pd.to_numeric(df[data_head], errors="coerce")
+	return df
+
+def deduplicate_df(df):
+	df = df.drop_duplicates(subset=["OCC_CODE", "INDUSTRY_CODE", "AREA_CODE"])
+	return df
+
+def generate_basic_codes(df, year, foldername):
 	try:
 		df['INDUSTRY_CODE'] = df[ _column_heads ['other_codes']['industry_code'] ].apply(interpret_industry_code)
 	except Exception as e:
 		print(e)
 		df['INDUSTRY_CODE'] = '000000'
-	df['OCCUPATION_CODE'] = df[ _column_heads ['other_codes']['occupation_code'] ].apply( process_occupation_code_enclosure(year ) )
 	df['AREA_CODE'] = df.apply( get_area_code_enclosure(year, foldername),axis=1 )
-	df['SERIES_CODE_START'] = OE_Constants.SERIES_PREFIX + df.AREA_CODE + df.INDUSTRY_CODE + df.OCCUPATION_CODE
+	return df
 
-def insert_data(codes_df, code, year):
-	groupby_fun = {'01':'sum','13':'mean'}[code]
-	data_head = _column_heads['data_codes'][code]
-	temp_df = codes_df[[ data_head , 'SERIES_CODE_START' ]].reset_index(drop=True)
-	temp_df['series_code'] = temp_df['SERIES_CODE_START'] + code
+def generate_series_codes(df, data_type_code):
+	df['OCCUPATION_CODE'] = df[ _column_heads ['other_codes']['occupation_code'] ].apply( rem_hyphen )
+	series_code_start = OE_Constants.SERIES_PREFIX + df.AREA_CODE + df.INDUSTRY_CODE + df.OCCUPATION_CODE
+	df['SERIES_CODE'] = series_code_start + data_type_code
+	return df
+
+def insert_data(df, year, data_type_code):
+	groupby_fun = DATA_CODE_AGG_FUNCS[data_type_code]
+	data_head = _column_heads['data_codes'][data_type_code]
+	temp_df = df[[ data_head , 'SERIES_CODE' ]].reset_index(drop=True)
+	temp_df['series_code'] = temp_df['SERIES_CODE']
 	temp_df['period'] = 'A01'
 	temp_df['year'] = year
 	temp_df['data_date'] = year+'-01-01'
@@ -107,8 +147,8 @@ def rem_hyphen(s):
 	return s.replace('-','')
 
 def process_occupation_code(year,occupation_code):
-	if int(year)<=2010:
-		occupation_code = _constants.crosswalk_2000_to_2010.get(occupation_code, occupation_code)
+	# if int(year)<=2010:
+	# 	occupation_code = _constants.crosswalk_2000_to_2010.get(occupation_code, occupation_code)
 	occupation_code = rem_hyphen(occupation_code)
 	return occupation_code
 

@@ -8,6 +8,7 @@ from config import DATA_FOLDER,FULL_FOLDER,NAT_FOLDER,STATE_FOLDER,METRO_FOLDER
 import io
 
 FULL_URLS = {
+    '2019':'https://www.bls.gov/oes/special.requests/oesm19all.zip',    
     '2018':'https://www.bls.gov/oes/special.requests/oesm18all.zip',
     '2017':'https://www.bls.gov/oes/special.requests/oesm17all.zip',
     '2016':'https://www.bls.gov/oes/special.requests/oesm16all.zip',
